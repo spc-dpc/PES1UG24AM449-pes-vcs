@@ -94,9 +94,43 @@ int object_exists(const ObjectID *id) {
 //
 // Returns 0 on success, -1 on error.
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
-    // TODO: Implement
-    (void)type; (void)data; (void)len; (void)id_out;
-    return -1;
+    char header[64];
+    const char *type_str =
+        (type == OBJ_BLOB) ? "blob" :
+        (type == OBJ_TREE) ? "tree" : "commit";
+
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len) + 1;
+
+    size_t total_len = header_len + len;
+    char *buffer = malloc(total_len);
+
+    memcpy(buffer, header, header_len);
+    memcpy(buffer + header_len, data, len);
+
+    compute_hash(buffer, total_len, id_out);
+
+    if (object_exists(id_out)) {
+        free(buffer);
+        return 0;
+    }
+
+    char path[512];
+    object_path(id_out, path, sizeof(path));
+
+    char dir[512];
+    char hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(id_out, hex);
+    snprintf(dir, sizeof(dir), "%s/%.2s", OBJECTS_DIR, hex);
+
+    mkdir(dir, 0755);
+
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    write(fd, buffer, total_len);
+    fsync(fd);
+    close(fd);
+
+    free(buffer);
+    return 0;
 }
 
 // Read an object from the store.
@@ -121,8 +155,43 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 //
 // The caller is responsible for calling free(*data_out).
 // Returns 0 on success, -1 on error (file not found, corrupt, etc.).
+	
+
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
-    // TODO: Implement
-    (void)id; (void)type_out; (void)data_out; (void)len_out;
-    return -1;
+    char path[512];
+    object_path(id, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    rewind(f);
+
+    char *buffer = malloc(size);
+    fread(buffer, 1, size, f);
+    fclose(f);
+
+    // find header end (\0)
+    char *nul = memchr(buffer, '\0', size);
+    if (!nul) {
+        free(buffer);
+        return -1;
+    }
+
+    char type[10];
+    int len;
+
+    sscanf(buffer, "%s %d", type, &len);
+
+    *len_out = len;
+    *data_out = malloc(len);
+    memcpy(*data_out, nul + 1, len);
+
+    // set type
+    if (strcmp(type, "blob") == 0)
+        *type_out = OBJ_BLOB;
+
+    free(buffer);
+    return 0;
 }
